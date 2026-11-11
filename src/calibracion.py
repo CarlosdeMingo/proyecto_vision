@@ -27,7 +27,7 @@ def get_chessboard_points(chessboard_shape, dx, dy):
             points.append([x, y, z])
             
     return np.array(points, dtype=np.float32)
-A
+
 def show_image(img):
     cv2.imshow("nombre",img)
     cv2.waitKey()

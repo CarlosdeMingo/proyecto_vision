@@ -13,6 +13,7 @@ def capturar_imagenes():
     # Crear carpeta para guardar las fotografías
     os.makedirs("calibration_chess_images", exist_ok=True)
 
+<<<<<<< HEAD
     contador = 0
     total_imagenes = 19
 
@@ -93,6 +94,21 @@ def capturar_imagenes():
             break
 
     cap.release()
+=======
+    points = []
+    for i in range(rows):
+        for j in range(cols):
+            x = i * dx
+            y = j * dy
+            z = 0.0
+            points.append([x, y, z])
+            
+    return np.array(points, dtype=np.float32)
+
+def show_image(img):
+    cv2.imshow("nombre",img)
+    cv2.waitKey()
+>>>>>>> 1dc6720cd3590c81dd90970ca2a00ee7dceafd26
     cv2.destroyAllWindows()
 
     print(f"Captura finalizada: {contador} imagenes")

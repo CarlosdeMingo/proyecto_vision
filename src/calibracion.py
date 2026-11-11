@@ -1,90 +1,109 @@
-#LIBRERIAS
-
 import cv2
-from typing import List
-import numpy as np
-import imageio.v3 as imageio
-import copy
 import os
-import glob
 
-#=====================================================================================
+def capturar_imagenes():
 
-#FUNCIONES
-def load_images(filenames: List) -> List:
-    return [cv2.imread(filename) for filename in filenames]
+    # Cambiar el índice si Iriun está en otra cámara
+    cap = cv2.VideoCapture(2, cv2.CAP_DSHOW)
 
+    if not cap.isOpened():
+        print("Error: no se encuentra la cámara Iriun")
+        return
 
-def get_chessboard_points(chessboard_shape, dx, dy):
-    cols, rows = chessboard_shape  # cols = tuple[0], rows = tuple[1]
+    # Crear carpeta para guardar las fotografías
+    os.makedirs("calibration_chess_images", exist_ok=True)
 
-    points = []
-    for i in range(rows):
-        for j in range(cols):
-            x = i * dx
-            y = j * dy
-            z = 0.0
-            points.append([x, y, z])
-            
-    return np.array(points, dtype=np.float32)
-A
-def show_image(img):
-    cv2.imshow("nombre",img)
-    cv2.waitKey()
+    contador = 0
+    total_imagenes = 19
+
+    while contador < total_imagenes:
+
+        ret, frame = cap.read()
+
+        if not ret:
+            print("Error capturando imagen")
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detectar esquinas del tablero
+        found, corners = cv2.findChessboardCorners(
+            gray, (9, 6), None
+        )
+
+        imagen = frame.copy()
+
+        if found:
+
+            cv2.drawChessboardCorners(
+                imagen, (9, 6), corners, found
+            )
+
+            cv2.putText(
+                imagen,
+                "TABLERO DETECTADO - Pulsa ESPACIO",
+                (20, 35),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
+            )
+
+        else:
+
+            cv2.putText(
+                imagen,
+                "Buscando tablero...",
+                (20, 35),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2
+            )
+
+        cv2.putText(
+            imagen,
+            f"Imagenes guardadas: {contador}/{total_imagenes}",
+            (20, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (255, 0, 0),
+            2
+        )
+
+        cv2.imshow("Calibracion Iriun", imagen)
+
+        key = cv2.waitKey(1) & 0xFF
+
+        # Guardar imagen pulsando espacio
+        if key == ord(' ') and found:
+
+            filename = (
+                f"calibration_chess_images/{contador:03d}.jpg"
+            )
+
+            cv2.imwrite(filename, frame)
+
+            contador += 1
+
+            print(f"Imagen guardada: {filename}")
+
+        # Salir pulsando ESC
+        elif key == 27:
+            break
+
+    cap.release()
     cv2.destroyAllWindows()
 
-#=====================================================================================
-def calibracion():
-    # 1. Carga de imágenes
-    imgs_path = [f"../calibration_chess_images/{i:03d}.jpg" for i in range(19)]
-    imgs = load_images(imgs_path)
-    imgs_gray = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in imgs]
+    print(f"Captura finalizada: {contador} imagenes")
 
-    # 2. Detección y refinamiento de esquinas asegurando sincronización
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
-    object_points = []
-    valid_corners = []
-    corners_refined_all = []
+    if contador < total_imagenes:
+        print("No se han capturado las 19 imagenes.")
 
-    for img_gray in imgs_gray:
-        ret, corners = cv2.findChessboardCorners(img_gray, (8, 6))
-        if ret:
-            # Refinamos las esquinas
-            refined = cv2.cornerSubPix(img_gray, corners, (4, 4), (-1, -1), criteria)
-            
-            # Añadimos los puntos 3D y 2D sincronizados
-            pts_3d = get_chessboard_points((8, 6), 30 * 10**-3, 30 * 10**-3)
-            object_points.append(np.array(pts_3d, dtype=np.float32))
-            valid_corners.append(np.array(refined, dtype=np.float32))
-            corners_refined_all.append(refined)
-        else:
-            corners_refined_all.append(None)
+if __name__ == "__main__":
 
-    # 3. Calibración de la cámara derecha con cv2.calibrateCamera()
-    image_size = imgs_gray[0].shape[::-1]
-    rms_r, intrinsics_r, dist_coeffs_r, rvecs_r, tvecs_r = cv2.calibrateCamera(
-        object_points, valid_corners, image_size, None, None
-    )
+    # PASO 1: Capturar las 19 fotografías
+    capturar_imagenes()
 
-    # Cálculo de extrínsecos para la cámara derecha
-    extrinsics_r = list(map(lambda rvec, tvec: np.hstack((cv2.Rodrigues(rvec)[0], tvec)), rvecs_r, tvecs_r))
-
-    # 4. Impresión por pantalla de los resultados solicitados
-    print("=== RESULTADOS CALIBRACIÓN CÁMARA DERECHA ===")
-    print("Error RMS de reproyección:\n", rms_r)
-    print("\nMatriz de Intrínsecos:\n", intrinsics_r)
-    print("\nCoeficientes de Distorsión:\n", dist_coeffs_r)
-
-    # 5. Dibujar y mostrar al menos 2 imágenes con la detección de esquinas
-    right_imgs_copy = copy.deepcopy(imgs)
-    valid_idx = 0
-    for i, ref in enumerate(corners_refined_all):
-        if ref is not None:
-            cv2.drawChessboardCorners(right_imgs_copy[i], (8, 6), ref, True)
-
-    print("\nMostrando las 2 primeras imágenes con esquinas detectadas...")
-    shown = 0
-    for i, ref in enumerate(corners_refined_all):
-        if ref is not None and shown < 2:
-            show_image(right_imgs_copy[i])
-            shown += 1
+    # PASO 2: Calibrar la cámara
+    calibracion()

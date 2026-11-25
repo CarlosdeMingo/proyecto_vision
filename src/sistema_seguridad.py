@@ -20,14 +20,13 @@ import time
 
 import cv2
 import numpy as np
+from PARAMS import CONTRASENA
 
 # ------------------------------------------------------------
 # CONFIGURACION
 # ------------------------------------------------------------
 CAMERA_INDEX = 0
 CALIBRACION = "calibration/camera_params.npz"
-
-CONTRASENA = ["TRIANGULO", "CIRCULO", "ESTRELLA", "CUADRADO"]
 
 FRAMES_PARA_CONFIRMAR = 10   # frames seguidos viendo la misma figura
 FRAMES_VACIOS = 5            # frames sin figura para poder ensenar la siguiente

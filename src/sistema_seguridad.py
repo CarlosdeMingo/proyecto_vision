@@ -24,7 +24,7 @@ import numpy as np
 # ------------------------------------------------------------
 # CONFIGURACION
 # ------------------------------------------------------------
-CAMERA_INDEX = 1
+CAMERA_INDEX = 0
 CALIBRACION = "calibration/camera_params.npz"
 
 CONTRASENA = ["TRIANGULO", "CIRCULO", "ESTRELLA", "CUADRADO"]
@@ -110,7 +110,7 @@ def detectar_figura(recorte):
 # 3. BUCLE PRINCIPAL
 # ------------------------------------------------------------
 def sistema_seguridad(cap):
-    """Devuelve True si se introduce la contrasena correcta, False si se sale."""
+    """Devuelve True si se introduce la contraseña correcta, False si se sale."""
     K, dist = cargar_calibracion()
 
     secuencia = []          # figuras introducidas

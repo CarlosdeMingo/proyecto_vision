@@ -355,15 +355,30 @@ def calibracion():
     return rms, intrinsics, dist_coeffs, extrinsics
 
 
-# ============================================================
+## ============================================================
 # 3. EJECUCION
 # ============================================================
+
+def hay_imagenes():
+
+    # Comprueba si ya existen fotos del tablero en la carpeta
+    imagenes = glob.glob(os.path.join(IMAGE_FOLDER, "*.jpg"))
+
+    return len(imagenes) >= 10
+
 
 if __name__ == "__main__":
 
     print("SMART INVENTORY - CALIBRACION")
 
-    if capturar_imagenes():
+    if hay_imagenes():
+
+        # Ya hay fotos: no se capturan otra vez, solo se calibra
+        print("Ya existen imagenes en", IMAGE_FOLDER, "-> solo se calibra")
+
+        calibracion()
+
+    elif capturar_imagenes():
 
         calibracion()
 

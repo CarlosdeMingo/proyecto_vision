@@ -20,19 +20,43 @@ import time
 
 import cv2
 import numpy as np
-from PARAMS import CONTRASENA
+import os
 
 # ------------------------------------------------------------
 # CONFIGURACION
 # ------------------------------------------------------------
-CAMERA_INDEX = 0
+CAMERA_INDEX=0
 CALIBRACION = "calibration/camera_params.npz"
 
 FRAMES_PARA_CONFIRMAR = 10   # frames seguidos viendo la misma figura
 FRAMES_VACIOS = 5            # frames sin figura para poder ensenar la siguiente
 TAMANO_RECUADRO = 0.5        # lado del recuadro central (fraccion del alto)
 
+# ------------------------------------------------------------
+# CONTRASEÑA
+# ------------------------------------------------------------
+def leer_contrasena():
+    """Lee contrasena.txt (una figura por linea) y devuelve una lista de 4."""
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contrasena.txt")
 
+    contrasena = []
+    with open(ruta, "r") as f:
+        for linea in f:
+            figura = linea.strip().upper()   # quita espacios / saltos y pasa a mayusculas
+            if figura != "":                 # ignora lineas vacias
+                contrasena.append(figura)
+
+    if len(contrasena) != 4:
+        raise ValueError(f"La contrasena debe tener 4 figuras y tiene {len(contrasena)}")
+    for figura in contrasena:
+        if figura not in FIGURAS_VALIDAS:
+            raise ValueError(f"Figura no valida en contrasena.txt: {figura}")
+
+    return contrasena
+
+FIGURAS_VALIDAS = ["TRIANGULO", "CUADRADO", "PENTAGONO", "HEXAGONO",
+                   "CIRCULO", "ESTRELLA", "CRUZ"]
+CONTRASENA = leer_contrasena()
 # ------------------------------------------------------------
 # 1. CALIBRACION
 # ------------------------------------------------------------
@@ -49,6 +73,7 @@ def cargar_calibracion():
 # ------------------------------------------------------------
 # 2. DETECCION DE LA FIGURA
 # ------------------------------------------------------------
+
 def clasificar(contorno):
     """Devuelve el nombre de la figura segun su numero de vertices."""
     perimetro = cv2.arcLength(contorno, True)

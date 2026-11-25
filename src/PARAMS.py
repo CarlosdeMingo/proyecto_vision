@@ -1,0 +1,5 @@
+"""
+Establece una contraseña. Las figuras disponibles son:
+TRIANGULO, CUADRADO, PENTAGONO, HEXAGONO, ESTRELLA, CRUZ, CIRCULO
+"""
+CONTRASENA = ["ESTRELLA", "ESTRELLA", "ESTRELLA", "ESTRELLA"]

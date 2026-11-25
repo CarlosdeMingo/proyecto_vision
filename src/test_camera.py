@@ -1,6 +1,6 @@
 import cv2
 
-def main(camera_index=0, width=1280, height=720):
+def main(camera_index, width=1280, height=720):
     cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)  # Use CAP_DSHOW for Windows to avoid warning messages
     if not cap.isOpened():
         print(f"Could not open the camera (index {camera_index}).")
@@ -37,4 +37,4 @@ def main(camera_index=0, width=1280, height=720):
 
 if __name__ == "__main__":
     # If the built-in webcam is not at index 0, change the first argument: main(1)
-    main(camera_index=2, width=1280, height=720)
+    main(camera_index=0, width=1280, height=720)

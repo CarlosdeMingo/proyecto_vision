@@ -1,7 +1,6 @@
 
 # ============================================================
 # SMART INVENTORY - CALIBRACION DE CAMARA CON IRIUN
-# Tablero: 7 x 10 cuadrados = 6 x 9 esquinas interiores
 # ============================================================
 
 # LIBRERIAS
@@ -19,13 +18,11 @@ import glob
 
 CHESSBOARD_SHAPE = (9, 6)
 
-# IMPORTANTE: medir el lado REAL de un cuadrado
-# Ejemplo: 30 mm = 0.030 metros
 SQUARE_SIZE = 0.030
 
 NUM_IMAGES = 19
 
-CAMERA_INDEX = 1  # Cambiar si Iriun utiliza otro indice
+CAMERA_INDEX = 2
 
 IMAGE_FOLDER = "calibration_chess_images"
 

@@ -231,7 +231,7 @@ def sistema_seguridad(cap):
 # ------------------------------------------------------------
 # 4. EJECUCION
 # ------------------------------------------------------------
-if __name__ == "__main__":
+def ejecucion_seguridad():
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         print("No se puede abrir la camara")
@@ -240,3 +240,6 @@ if __name__ == "__main__":
             print("ACCESO CONCEDIDO -> lanzar tracker")
         cap.release()
         cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    ejecucion_seguridad()

@@ -60,5 +60,5 @@ python src/main.py          # sistema completo
 
 ## Autores
 
-- *Nombre Apellido*
-- *Nombre Apellido*
+- *Diego Bertolín*
+- *Carlos de Mingo*

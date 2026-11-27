@@ -1,7 +1,8 @@
 """Deteccion y seguimiento de bebidas mediante OpenCV y NumPy.
 
 Se analiza una superficie lisa en cada frame, sin guardar una imagen de fondo.
-Se detecta primero el color y se cuenta en ambos sentidos.
+Se buscan siluetas de botella y se verifica el color del liquido y etiqueta.
+No se identifica una bebida solamente por una mancha de color.
 """
 import itertools
 import cv2
@@ -20,18 +21,27 @@ BEBIDAS = ('Coca-Cola', 'Powerade', 'Fanta', 'Agua')
 # Evidencias del liquido y de la etiqueta, no un color unico por bebida.
 # El negro no tiene una tonalidad H fiable: se detecta por luminosidad V.
 RANGOS = {
-    'rojo': [((0, 85, 40), (13, 255, 255)),
-             ((165, 85, 40), (179, 255, 255))],
-    'cian': [((78, 85, 45), (109, 255, 255))],
-    'amarillo': [((19, 125, 55), (39, 255, 255))],
-    'naranja': [((10, 155, 60), (18, 255, 255))],
-    'azul_oscuro': [((110, 40, 30), (150, 255, 255))],
-    'oscuro': [((0, 0, 0), (179, 255, 105))],
+    'rojo': [((0, 95, 78), (13, 255, 255)),
+             ((165, 95, 78), (179, 255, 255))],
+    # El cian del liquido es mas saturado y claro que la etiqueta de agua.
+    'cian': [((85, 145, 85), (108, 255, 255))],
+    'amarillo': [((15, 145, 85), (37, 255, 255))],
+    'naranja': [((8, 140, 80), (20, 255, 255))],
+    'azul_oscuro': [((109, 40, 35), (145, 255, 255)),
+                    ((100, 50, 35), (108, 145, 160))],
+    'oscuro': [((0, 0, 0), (179, 255, 100))],
 }
+# Parametros relativos a la resolucion: ajustar solo con capturas reales.
+AREA_RELATIVA_MIN = 0.0025
+ASPECTO_MIN = 1.48
+ASPECTO_MAX = 6.5
+MIN_CIAN = 0.23
+MIN_AMARILLO = 0.23
+MIN_AZUL_AGUA = 0.035
 COLORES = {'Coca-Cola': (0, 0, 255), 'Powerade': (255, 210, 0),
            'Fanta': (0, 145, 255), 'Agua': (255, 120, 100)}
-# El area minima se refiere a la mancha de color, no a toda la botella.
-MIN_VOTOS = 3
+# El area minima se refiere a la silueta, no a una mancha de color.
+MIN_VOTOS = 4
 MAX_PERDIDOS = 12
 MAX_OBJETOS = 2
 
@@ -42,7 +52,7 @@ class DetectorObjetos:
         self.x = self.y = 0
         self.orientacion = ORIENTACION_LINEA
         self.configurar_linea()
-        self.area_min = max(28, self.w*self.h*0.00045)
+        self.area_min = max(100, self.w*self.h*AREA_RELATIVA_MIN)
         self.tracks = []
         self.siguiente_id = 1
         self.mascara = np.zeros((self.h, self.w), np.uint8)
@@ -88,6 +98,9 @@ class DetectorObjetos:
                                    lab[::3, :borde:3].reshape(-1, 3),
                                    lab[::3, -borde::3].reshape(-1, 3)))
         # Cuantizacion para agrupar pequenas variaciones de iluminacion.
+        validas = muestras[:,0] > 8
+        if np.count_nonzero(validas) >= len(muestras)*0.25:
+            muestras = muestras[validas]
         q = muestras.astype(np.int32)//16
         claves = q[:, 0]*256 + q[:, 1]*16 + q[:, 2]
         moda = np.bincount(claves, minlength=4096).argmax()
@@ -96,10 +109,10 @@ class DetectorObjetos:
         return np.median(muestras[cercanas], axis=0).astype(np.float32)
 
     def segmentar(self, frame):
-        """HSV primero. El fondo solo ayuda a completar la silueta.
+        """Mascara de contraste actual + evidencias de color independientes.
 
-        Nunca se exige que un pixel de color supere un umbral de diferencia
-        respecto al fondo para detectar una bebida.
+        Se estima el fondo por frame, nunca se necesita capturarlo antes.
+        Las zonas negras del borde introducidas por undistort no cuentan.
         """
         recorte = cv2.GaussianBlur(self.recortar(frame), (3, 3), 0)
         hsv = cv2.cvtColor(recorte, cv2.COLOR_BGR2HSV)
@@ -110,29 +123,25 @@ class DetectorObjetos:
             for inferior, superior in rangos:
                 m |= cv2.inRange(hsv, inferior, superior)
             mascaras[nombre] = m
-        # El fondo se estima de nuevo, pero solo se usa como apoyo geometrico.
         superficie = self.color_superficie(lab)
         diferencia = lab.astype(np.float32) - superficie
         croma = np.hypot(diferencia[:, :, 1], diferencia[:, :, 2])
         luz = np.abs(diferencia[:, :, 0])
-        apoyo = ((croma > 13) | (luz > 24)).astype(np.uint8)*255
+        apoyo = ((croma > 14) | (luz > 24)).astype(np.uint8)*255
+        # Las sombras suaves no suelen tener cromaticidad distinta del fondo.
+        # Se conservan las zonas oscuras porque son utiles en Coca-Cola.
+        k = max(3, min(9, (min(self.w,self.h)//90)|1))
         apoyo = cv2.morphologyEx(apoyo, cv2.MORPH_CLOSE,
-                                  np.ones((5, 5), np.uint8))
-        # Evitar que una mesa amarilla/naranja uniforme se convierta en Fanta.
-        # Solo se elimina una region si ocupa gran parte del fotograma y
-        # conecta con varios bordes; no se descarta una botella cercana.
-        semillas = {
-            'Coca-Cola': mascaras['rojo'],
-            'Powerade': mascaras['cian'],
-            'Fanta': mascaras['amarillo'] | mascaras['naranja'],
-            'Agua': mascaras['azul_oscuro'],
-        }
-        self.mascara = np.zeros(hsv.shape[:2], np.uint8)
-        for nombre, m in semillas.items():
-            m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3,3), np.uint8))
-            m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
-            semillas[nombre] = m
-        return semillas, apoyo
+                                  cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(k,k)))
+        apoyo = cv2.morphologyEx(apoyo, cv2.MORPH_OPEN,np.ones((3,3),np.uint8))
+        # Eliminar componentes de negro puro pegadas al borde (calibracion).
+        negro = cv2.inRange(recorte,(0,0,0),(5,5,5))
+        n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(negro)
+        for i in range(1,n):
+            x,y,w,h,area = stats[i]
+            if x==0 or y==0 or x+w==self.w or y+h==self.h:
+                apoyo[etiquetas==i] = 0
+        return mascaras, apoyo
 
     def candidato(self, silueta, bebida, estimado=False):
         puntos = cv2.findNonZero(silueta)
@@ -151,129 +160,161 @@ class DetectorObjetos:
         pasos = t['perdidos']+1
         return tuple(c+v*pasos for c,v in zip(t['centro'],t['velocidad']))
 
-    def agrupar_fragmentos(self, contornos, bebida):
-        """Une etiqueta/tapon a lo largo del eje de una botella tumbada.
+    def geometria(self, region):
+        """Proporciones en cualquier orientacion; no depende del eje de paso."""
+        puntos = cv2.findNonZero(region)
+        if puntos is None:
+            return None
+        (cx,cy),(a,b),angulo = cv2.minAreaRect(puntos)
+        largo,corto = max(a,b),min(a,b)
+        area = cv2.countNonZero(region)
+        if corto < 8 or area < self.area_min or area > self.w*self.h*0.78:
+            return None
+        if not ASPECTO_MIN <= largo/corto <= ASPECTO_MAX:
+            return None
+        if area/max(1.,largo*corto) < 0.38:
+            return None
+        x,y,w,h = cv2.boundingRect(puntos)
+        bordes = sum((x<=2,y<=2,x+w>=self.w-2,y+h>=self.h-2))
+        if bordes >= 3:
+            return None
+        angulo = np.deg2rad(angulo + (90 if b>a else 0))
+        eje = np.array([np.cos(angulo),np.sin(angulo)])
+        return np.array([cx,cy]),eje,largo,corto
 
-        No une dos regiones lado a lado en el sentido de paso.
+    def extension(self, mascara, region, geo):
+        """Fraccion longitudinal ocupada por un color (ignora pocos reflejos)."""
+        puntos = cv2.findNonZero(mascara & region)
+        if puntos is None or len(puntos)<10:
+            return 0.
+        centro,eje,largo,_ = geo
+        proy = (puntos[:,0,:]-centro) @ eje
+        return float((np.percentile(proy,95)-np.percentile(proy,5))/max(largo,1))
+
+    def evidencia_agua(self, mascara, region, geo):
+        """Dos zonas azules separadas a lo largo de la botella (tapon/etiqueta)."""
+        m = cv2.morphologyEx(mascara & region, cv2.MORPH_OPEN,np.ones((3,3),np.uint8))
+        n,_,stats,centros = cv2.connectedComponentsWithStats(m)
+        centro,eje,largo,corto = geo
+        minimo = max(12, cv2.countNonZero(region)*0.008)
+        ids = [i for i in range(1,n) if stats[i,4]>=minimo]
+        perpendicular = np.array([-eje[1],eje[0]])
+        for i,j in itertools.combinations(ids,2):
+            delta = centros[i]-centros[j]
+            if (0.25*largo <= abs(delta@eje) <= 0.85*largo and
+                abs(delta@perpendicular) <= 0.45*corto):
+                return True
+        return False
+
+    def evaluar(self, region, mascaras, origen):
+        geo = self.geometria(region)
+        if geo is None:
+            return None
+        area = cv2.countNonZero(region)
+        p = {k:cv2.countNonZero(m & region)/area for k,m in mascaras.items()}
+        span_cian = self.extension(mascaras['cian'],region,geo)
+        amarilla = mascaras['amarillo'] | mascaras['naranja']
+        span_amarillo = self.extension(amarilla,region,geo)
+        caliente = cv2.countNonZero(amarilla & region)/area
+        # Las reglas se aplican a la silueta completa, no a cada etiqueta.
+        # Un trozo azul aislado no es Powerade: se exige liquido extenso.
+        bebida,confianza = None,0.
+        if (MIN_CIAN<=p['cian']<=0.88 and span_cian>=0.48 and
+            p['cian']>=1.8*p['azul_oscuro'] and p['cian']>=1.5*caliente):
+            bebida,confianza = 'Powerade', p['cian'] + 0.35*span_cian
+        elif (p['oscuro']>=0.23 and p['rojo']>=0.045 and
+              self.extension(mascaras['oscuro'],region,geo)>=0.45 and
+              p['cian']<0.15 and caliente<0.35):
+            bebida,confianza = 'Coca-Cola',p['oscuro']+0.9*p['rojo']
+        elif (MIN_AMARILLO<=p['amarillo']<=0.88 and 0.32<=caliente<=0.95 and
+              span_amarillo>=0.48 and p['cian']<0.15):
+            bebida,confianza = 'Fanta',caliente+0.25*span_amarillo
+        elif (p['azul_oscuro']>=MIN_AZUL_AGUA and p['cian']<0.12 and
+              p['amarillo']<0.16 and p['rojo']<0.10 and
+              self.evidencia_agua(mascaras['azul_oscuro'],region,geo)):
+            bebida,confianza = 'Agua',0.45+min(p['azul_oscuro'],0.3)
+        if bebida is None:
+            return None
+        d = self.candidato(region,bebida)
+        if d is not None:
+            d.update(region=region,pixeles=area,confianza=confianza,origen=origen)
+        return d
+
+    def regiones(self, mascara):
+        contornos,_ = cv2.findContours(mascara,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        # Limitar el numero de regiones a analizar aunque haya mucho ruido.
+        for c in sorted(contornos,key=cv2.contourArea,reverse=True)[:20]:
+            if cv2.contourArea(c)<self.area_min*0.8:
+                continue
+            region = np.zeros_like(mascara)
+            cv2.drawContours(region,[c],-1,255,-1)
+            yield region
+
+    def propuestas_agua(self, azul, apoyo):
+        """Recupera agua transparente cuando el fondo se ve a traves de ella.
+
+        Exige dos piezas azules alineadas y una envolvente alargada. Una
+        etiqueta aislada nunca crea una propuesta de agua o de Powerade.
         """
-        grupos = [c for c in contornos if cv2.contourArea(c) >= self.area_min*0.35]
-        cambio = True
-        while cambio:
-            cambio = False
-            for i,a in enumerate(grupos):
-                ax,ay,aw,ah = cv2.boundingRect(a)
-                for j in range(i+1,len(grupos)):
-                    b = grupos[j]
-                    bx,by,bw,bh = cv2.boundingRect(b)
-                    u,v = (ax,ay),(bx,by)
-                    du,dv = (aw,ah),(bw,bh)
-                    e, k = self.eje, 1-self.eje
-                    solape = min(u[e]+du[e],v[e]+dv[e])-max(u[e],v[e])
-                    hueco = max(v[k]-(u[k]+du[k]),u[k]-(v[k]+dv[k]))
-                    alineados = (solape >= 0.50*min(du[e],dv[e]) and
-                                  abs(u[e]+du[e]/2-v[e]-dv[e]/2) <= 0.45*max(du[e],dv[e]))
-                    # En agua, el tapon y la etiqueta de una botella inclinada
-                    # pueden tener menos solape. Exigir separacion longitudinal.
-                    agua_inclinada = (bebida == 'Agua' and hueco > 0 and
-                        solape >= 0.15*min(du[e],dv[e]) and
-                        abs(u[e]+du[e]/2-v[e]-dv[e]/2) <= 0.80*max(du[e],dv[e]) and
-                        min(cv2.contourArea(a),cv2.contourArea(b)) <= 0.78*max(cv2.contourArea(a),cv2.contourArea(b)))
-                    if ((alineados or agua_inclinada) and
-                        hueco <= min((self.w,self.h)[k]*0.26, 2.4*max(du[e],dv[e]))):
-                        grupos[i] = cv2.convexHull(np.vstack((a,b)))
-                        grupos.pop(j)
-                        cambio = True
-                        break
-                if cambio:
-                    break
-        return grupos
+        m = cv2.morphologyEx(azul,cv2.MORPH_OPEN,np.ones((3,3),np.uint8))
+        cs,_ = cv2.findContours(m,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        cs = [c for c in sorted(cs,key=cv2.contourArea,reverse=True)[:12]
+              if cv2.contourArea(c)>=max(18,self.area_min*0.055)]
+        for a,b in itertools.combinations(cs,2):
+            aa,ab = cv2.contourArea(a),cv2.contourArea(b)
+            if min(aa,ab)/max(aa,ab)<0.12:
+                continue
+            # Un tapon y una etiqueta son de tamanos distintos.
+            if min(aa,ab)/max(aa,ab)>0.88:
+                continue
+            hull = cv2.convexHull(np.vstack((a,b)))
+            region = np.zeros_like(azul)
+            cv2.drawContours(region,[hull],-1,255,-1)
+            geo = self.geometria(region)
+            if geo is None:
+                continue
+            # No unir dos etiquetas de botellas distintas, alineadas con el paso.
+            _,eje,_,_ = geo
+            if abs(eje[self.eje])>0.70:
+                continue
+            if cv2.countNonZero(region & apoyo)<0.12*cv2.countNonZero(region):
+                continue
+            yield region
 
     def detectar(self, frame):
-        semillas, apoyo = self.segmentar(frame)
-        contornos_apoyo,_ = cv2.findContours(apoyo,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-        # Candidatos de color antes de cualquier filtro de fondo.
-        candidatos = []
+        mascaras,apoyo = self.segmentar(frame)
         self.aviso = ''
-        for bebida, mascara in semillas.items():
-            contornos,_ = cv2.findContours(mascara,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-            for c in self.agrupar_fragmentos(contornos,bebida):
-                x,y,w,h = cv2.boundingRect(c)
-                bordes = sum((x<=2, y<=2, x+w>=self.w-2, y+h>=self.h-2))
-                area = cv2.contourArea(c)
-                if (bordes >= 3 and area > self.w*self.h*0.28) or (bordes >= 2 and area > self.w*self.h*0.55):
-                    continue
-                if area < self.area_min*0.65:
-                    continue
-                region = np.zeros_like(mascara)
-                cv2.drawContours(region,[c],-1,255,-1)
-                pixeles = cv2.countNonZero(region & mascara)
-                if pixeles < self.area_min:
-                    continue
-                d = self.candidato(region,bebida)
-                if d is not None:
-                    d['pixeles'] = pixeles
-                    d['region'] = region
-                    candidatos.append(d)
-        # Suprimir pequenos tapones/fragmentos de otra bebida en la misma
-        # trayectoria (ej. tapon azul de Fanta o etiqueta multicolor).
-        candidatos.sort(key=lambda d: d['pixeles']*(0.65 if d['bebida']=='Agua' else 1), reverse=True)
+        self.mascara = np.zeros_like(apoyo)
+        candidatos = []
+        for region in self.regiones(apoyo):
+            d = self.evaluar(region,mascaras,'silueta')
+            if d:
+                candidatos.append(d)
+        for region in self.propuestas_agua(mascaras['azul_oscuro'],apoyo):
+            d = self.evaluar(region,mascaras,'agua')
+            if d and d['bebida']=='Agua':
+                candidatos.append(d)
+        # Preferir una silueta completa a una parte de la misma botella.
+        candidatos.sort(key=lambda d:(d['origen']=='silueta',d['confianza'],d['area']),reverse=True)
         validos = []
         for d in candidatos:
-            x,y,w,h = d['caja']
-            e,k = self.eje,1-self.eje
-            u,du = (x,y),(w,h)
-            descartar = False
-            for otro in validos:
-                xx,yy,ww,hh = otro['caja']
-                v,dv = (xx,yy),(ww,hh)
-                solape = min(u[e]+du[e],v[e]+dv[e])-max(u[e],v[e])
-                hueco = max(v[k]-(u[k]+du[k]),u[k]-(v[k]+dv[k]),0)
-                if (d['bebida'] != otro['bebida'] and
-                    solape >= 0.55*min(du[e],dv[e]) and
-                    abs(d['centro'][e]-otro['centro'][e]) <= 0.55*max(du[e],dv[e]) and
-                    hueco <= min((self.w,self.h)[k]*0.25,2.1*max(du[e],dv[e])) and
-                    d['pixeles'] <= 0.45*otro['pixeles']):
-                    descartar = True
-                    break
-            if not descartar:
-                validos.append(d)
-        # Intenta recuperar toda la silueta a partir del color. Solo se usa
-        # un contorno de apoyo si cubre exactamente una semilla y su tamano
-        # es razonable; de lo contrario se conserva el centroide del color.
-        detecciones = []
-        for d in validos:
-            mejor = None
-            for c in contornos_apoyo:
-                x,y,w,h = cv2.boundingRect(c)
-                a = cv2.contourArea(c)
-                if a < d['area']*0.8 or a > min(self.w*self.h*0.85,d['area']*10):
-                    continue
-                if not (x <= d['centro'][0] <= x+w and y <= d['centro'][1] <= y+h):
-                    continue
-                region = np.zeros_like(apoyo)
-                cv2.drawContours(region,[c],-1,255,-1)
-                if cv2.countNonZero(region & d['region']) < d['area']*0.70:
-                    continue
-                if any(o is not d and cv2.countNonZero(region & o['region']) > o['area']*0.35 for o in validos):
-                    continue
-                if mejor is None or a > mejor[0]:
-                    mejor = (a,region)
-            region = mejor[1] if mejor else d['region']
-            nuevo = self.candidato(region,d['bebida'])
-            if nuevo:
-                nuevo['pixeles'] = d['pixeles']
-                nuevo['region'] = region
-                nuevo['estimado'] = False
-                detecciones.append(nuevo)
-                self.mascara |= region
-        detecciones = self.separar_trayectorias(detecciones)
+            if any(cv2.countNonZero(d['region'] & o['region']) > 0.30*min(d['area'],o['area'])
+                   for o in validos):
+                continue
+            # Suprimir una posible pareja de azul que pertenece a Fanta/Powerade.
+            if d['origen']=='agua' and any(o['bebida']!='Agua' and
+                   cv2.countNonZero(d['region'] & o['region'])>0.10*d['area'] for o in validos):
+                continue
+            validos.append(d)
+            self.mascara |= d['region']
+        detecciones = self.separar_trayectorias(validos)
         self.ocupada = bool(detecciones)
-        # Limitar candidatos para que la asociacion no crezca con el ruido.
-        detecciones.sort(key=lambda d:d['pixeles'],reverse=True)
         if not detecciones:
-            self.aviso = 'Sin color de bebida detectado | M: ver mascara'
+            # Muestra el contraste aunque la clasificacion no sea valida.
+            self.mascara = apoyo
+            self.aviso = 'Sin botella confirmada | M: revisar segmentacion'
         elif len(detecciones)>2:
-            self.aviso = 'Hay mas de 2 regiones de color; revisar fondo/luz'
+            self.aviso = 'Demasiadas regiones validas; despejar superficie'
         return detecciones[:6]
 
     def separar_trayectorias(self, detecciones):
@@ -333,7 +374,9 @@ class DetectorObjetos:
             return None
         tipo = self.clasificacion(t) or max(BEBIDAS,key=t['votos'].get)
         if tipo and d['bebida'] and tipo != d['bebida']:
-            return None
+            if self.clasificacion(t) is not None:
+                return None
+            distancia += limite*0.4
         return distancia
 
     def asociar(self, detecciones):
@@ -370,7 +413,7 @@ class DetectorObjetos:
              'tamano': d['caja'][2:], 'area': d['area'], 'velocidad': (0.,0.),
              'perdidos': 0, 'frames': 1, 'votos': votos, 'contado': False,
              'lado_inicial': self.lado(d['centro']),
-             'cruzado': False, 'estimado': False}
+             'cruzado': False, 'estimado': False, 'inicio': d['centro'][self.eje]}
         self.siguiente_id += 1
         self.tracks.append(t)
 
@@ -420,7 +463,9 @@ class DetectorObjetos:
         eventos = []
         for t in self.tracks:
             bebida = self.clasificacion(t)
-            if t['cruzado'] and not t['contado'] and not t['perdidos'] and not t['estimado']:
+            recorrido = abs(t['centro'][self.eje]-t['inicio'])
+            minimo = max(2*self.margen,0.06*(self.w if self.eje==0 else self.h))
+            if t['cruzado'] and recorrido>=minimo and not t['contado'] and not t['perdidos'] and not t['estimado']:
                 if bebida:
                     eventos.append(bebida)
                     t['contado'] = True

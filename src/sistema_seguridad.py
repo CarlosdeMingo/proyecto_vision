@@ -25,7 +25,7 @@ import os
 # ------------------------------------------------------------
 # CONFIGURACION
 # ------------------------------------------------------------
-CAMERA_INDEX=0
+CAMERA_INDEX=1
 CALIBRACION = "calibration/camera_params.npz"
 
 FRAMES_PARA_CONFIRMAR = 10   # frames seguidos viendo la misma figura
@@ -236,7 +236,7 @@ def ejecucion_seguridad():
     if not cap.isOpened():
         print("No se puede abrir la camara")
     else:
-        if sistema_seguridad(cap):
+        if sistema_seguridad(cap):  
             print("ACCESO CONCEDIDO -> lanzar tracker")        
         cap.release()
         cv2.destroyAllWindows()

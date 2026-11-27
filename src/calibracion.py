@@ -22,7 +22,7 @@ SQUARE_SIZE = 0.030
 
 NUM_IMAGES = 19
 
-CAMERA_INDEX = 2
+CAMERA_INDEX = 1
 
 IMAGE_FOLDER = "calibration_chess_images"
 

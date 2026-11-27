@@ -4,8 +4,14 @@ La camara debe estar fija y las bebidas deben rodar en un unico sentido.
 Las coordenadas del detector son relativas a la zona de paso (ROI).
 """
 import itertools
+import time
 import cv2
 import numpy as np
+
+from gestion_camara import leer_frame
+from interfaz import dibujar_fps
+
+IZQUIERDA_DERECHA = True
 
 # El orden coincide con los cuatro digitos que introduce el usuario.
 BEBIDAS = ('Coca-Cola', 'Powerade', 'Fanta', 'Agua')
@@ -382,3 +388,40 @@ class DetectorObjetos:
             cv2.circle(frame,(cx,cy),7,(255,255,255),-1,cv2.LINE_AA)
             cv2.circle(frame,(cx,cy),5,(0,0,255),-1,cv2.LINE_AA)
         return frame
+
+
+def preparar_detector(cap,mapas,anterior=None):
+    print('Retira las bebidas y deja la camara fija. Pulsa ESPACIO con la zona vacia.')
+    ventana = 'Preparar zona vacia'
+    anterior_t = time.perf_counter()
+    while True:
+        frame = leer_frame(cap,mapas)
+        vista = frame.copy()
+        cv2.putText(vista,'ESPACIO: capturar fondo | Q: cancelar',(10,50),0,0.55,(0,255,255),2)
+        ahora = time.perf_counter()
+        dibujar_fps(vista, 1/max(ahora-anterior_t, 1e-6))
+        anterior_t = ahora
+        cv2.imshow(ventana,vista)
+        tecla = cv2.waitKey(1)&255
+        if tecla in (27,ord('q')):
+            cv2.destroyWindow(ventana)
+            return None
+        if tecla==32:
+            break
+    # Mediana temporal: reduce ruido y fluctuaciones puntuales del sensor.
+    muestras = []
+    for i in range(15):
+        muestras.append(leer_frame(cap,mapas))
+        cv2.waitKey(1)
+    fondo = np.median(np.stack(muestras),axis=0).astype(np.uint8)
+    cv2.destroyWindow(ventana)
+    print('Selecciona toda la zona por donde ruedan las bebidas, de entrada a salida. ENTER para aceptar.')
+    zona = tuple(map(int,cv2.selectROI('Zona de paso',fondo,False,False)))
+    cv2.destroyWindow('Zona de paso')
+    if zona[2]<60 or zona[3]<30:
+        print('Zona cancelada o demasiado pequena.')
+        return None
+    detector = DetectorObjetos(fondo,zona,IZQUIERDA_DERECHA)
+    if anterior is not None:
+        detector.siguiente_id = anterior.siguiente_id
+    return detector

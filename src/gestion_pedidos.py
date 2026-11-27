@@ -51,15 +51,16 @@ class GestorPedidos:
 
 
 def leer_pedido():
-    print('\nOrden: Coca-Cola, Powerade, Fanta naranja, Agua.')
-    print('Ejemplo: 1111 = 1 Coca-Cola, 1 Powerade, 1 Fanta y 1 Agua.')
+    n = len(BEBIDAS)
+    print('\nOrden: ' + ', '.join(BEBIDAS) + '.')
+    print('Ejemplo: ' + '1' * n + ' = ' + ', '.join('1 ' + b for b in BEBIDAS) + '.')
     while True:
-        texto = input('Pedido (4 digitos, q para salir): ').strip().lower()
+        texto = input(f'Pedido ({n} digitos, q para salir): ').strip().lower()
         if texto == 'q':
             return None
-        if len(texto)==4 and all(c in '0123456789' for c in texto) and texto!='0000':
-            return dict(zip(BEBIDAS,map(int,texto)))
-        print('Introduce exactamente cuatro digitos y al menos una bebida.')
+        if len(texto) == n and texto.isdigit() and texto != '0' * n:
+            return dict(zip(BEBIDAS, map(int, texto)))
+        print(f'Introduce exactamente {n} digitos y al menos una bebida.')
 
 
 def preguntar_nuevo_pedido():

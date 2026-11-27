@@ -42,7 +42,7 @@ def mostrar(frame, detector, gestor, estado_pedido, fps):
         estado,color = 'Pedido en curso',(0,230,255)
     cv2.putText(panel,estado,(12,159),0,0.63,color,2)
     cv2.putText(panel,detector.aviso or f'Objetos seguidos: {len(detector.tracks)}',(12,185),0,0.5,(200,200,200),1)
-    cv2.putText(panel,'Q: salir | R: recapturar fondo/ROI | M: mascara de movimiento',(12,214),0,0.51,(200,200,200),1)
+    cv2.putText(panel,'Q: salir | M: mascara de deteccion (sin fondo fijo)',(12,214),0,0.51,(200,200,200),1)
     if ancho>frame.shape[1]:
         frame = cv2.copyMakeBorder(frame,0,0,0,ancho-frame.shape[1],cv2.BORDER_CONSTANT)
     cv2.imshow(VENTANA,np.vstack((frame,panel)))

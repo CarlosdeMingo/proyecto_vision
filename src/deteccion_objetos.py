@@ -1,15 +1,13 @@
 """Deteccion y seguimiento de bebidas mediante OpenCV y NumPy.
 
-La camara debe estar fija y las bebidas deben rodar en un unico sentido.
-Las coordenadas del detector son relativas a la zona de paso (ROI).
+Se analiza una superficie lisa en cada frame, sin guardar una imagen de fondo.
+Las bebidas ruedan en un unico sentido y la camara puede moverse ligeramente.
 """
 import itertools
-import time
 import cv2
 import numpy as np
 
 from gestion_camara import leer_frame
-from interfaz import dibujar_fps
 
 IZQUIERDA_DERECHA = True
 
@@ -36,26 +34,24 @@ MIN_NARANJA = 0.19
 MIN_ROJO = 0.045
 MIN_OSCURO = 0.20
 MIN_AZUL_AGUA = 0.055
-UMBRAL_FONDO = 25
+UMBRAL_CROMA = 19  # Diferencia de color en Lab frente a la superficie.
+UMBRAL_LUZ = 39    # Diferencia de luminosidad frente a la superficie.
 MIN_VOTOS = 3
 MAX_PERDIDOS = 12
 MAX_OBJETOS = 2
 
 
 class DetectorObjetos:
-    def __init__(self, fondo, zona, izquierda_derecha=True):
-        self.x, self.y, self.w, self.h = map(int, zona)
-        if self.w < 60 or self.h < 30 or self.x < 0 or self.y < 0:
-            raise ValueError('Zona de paso demasiado pequena o invalida')
-        if self.x+self.w > fondo.shape[1] or self.y+self.h > fondo.shape[0]:
-            raise ValueError('Zona fuera de la imagen')
+    def __init__(self, frame, izquierda_derecha=True):
+        # Toda la imagen es la zona de deteccion. No hay seleccion manual.
+        self.h, self.w = frame.shape[:2]
+        self.x = self.y = 0
         self.sentido = 1 if izquierda_derecha else -1
-        self.linea = int(self.w * (0.70 if izquierda_derecha else 0.30))
-        self.margen = max(3, int(self.w * 0.012))
-        self.area_min = max(110, self.w*self.h*0.0025)
+        self.linea = int(self.w * 0.50)
+        self.margen = max(4, int(self.w * 0.035))  # Evitar cruces por pequenos temblores.
+        self.area_min = max(45, self.w*self.h*0.0007)
         self.tracks = []
         self.siguiente_id = 1
-        self.fondo = cv2.GaussianBlur(self.recortar(fondo), (5, 5), 0)
         self.mascara = np.zeros((self.h, self.w), np.uint8)
         self.ocupada = False
         self.aviso = ''
@@ -67,29 +63,54 @@ class DetectorObjetos:
         # Negativo antes de la linea y positivo despues, en ambos sentidos.
         return self.sentido * (x-self.linea)
 
+    def color_superficie(self, lab):
+        """Estima el color dominante del borde en el frame actual.
+
+        Una superficie lisa suele aparecer en varios bordes aunque la camara
+        cambie de posicion. Se usa la moda de colores cuantizados, no la
+        media de toda la imagen (que incluiria las botellas).
+        """
+        h, w = lab.shape[:2]
+        borde = max(2, min(h, w)//16)
+        muestras = np.concatenate((lab[:borde:3, ::3].reshape(-1, 3),
+                                   lab[-borde::3, ::3].reshape(-1, 3),
+                                   lab[::3, :borde:3].reshape(-1, 3),
+                                   lab[::3, -borde::3].reshape(-1, 3)))
+        # Cuantizacion para agrupar pequenas variaciones de iluminacion.
+        q = muestras.astype(np.int32)//16
+        claves = q[:, 0]*256 + q[:, 1]*16 + q[:, 2]
+        moda = np.bincount(claves, minlength=4096).argmax()
+        centro = np.median(muestras[claves == moda], axis=0)
+        cercanas = np.max(np.abs(muestras.astype(np.float32)-centro), axis=1) < 24
+        return np.median(muestras[cercanas], axis=0).astype(np.float32)
+
     def segmentar(self, frame):
         recorte = cv2.GaussianBlur(self.recortar(frame), (5, 5), 0)
-        # Compensar cambios globales moderados de luminosidad, no los locales.
-        diferencia = recorte.astype(np.int16)-self.fondo.astype(np.int16)
-        muestra = diferencia[::5, ::5]
-        cambio = float(np.clip(np.median(muestra), -22, 22))
-        distancia = np.max(np.abs(diferencia-cambio), axis=2)
-        movimiento = (distancia > UMBRAL_FONDO).astype(np.uint8)*255
+        lab = cv2.cvtColor(recorte, cv2.COLOR_BGR2LAB)
+        superficie = self.color_superficie(lab)
+        diferencia = lab.astype(np.float32)-superficie
+        croma = np.hypot(diferencia[:, :, 1], diferencia[:, :, 2])
+        luz = np.abs(diferencia[:, :, 0])
+        # El fondo se estima de nuevo cada vez: mover el movil no compara
+        # coordenadas actuales con las de una fotografia antigua.
+        primer_plano = ((croma > UMBRAL_CROMA) | (luz > UMBRAL_LUZ)).astype(np.uint8)*255
         kernel3 = np.ones((3, 3), np.uint8)
-        kernel5 = np.ones((5, 5), np.uint8)
-        movimiento = cv2.morphologyEx(movimiento, cv2.MORPH_OPEN, kernel3)
-        # Cerrar huecos de letras, reflejos y zonas transparentes.
-        movimiento = cv2.morphologyEx(movimiento, cv2.MORPH_CLOSE, kernel5)
+        primer_plano = cv2.morphologyEx(primer_plano, cv2.MORPH_OPEN, kernel3)
+        primer_plano = cv2.morphologyEx(primer_plano, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        # Las botellas ruedan horizontalmente: cerrar huecos pequenos en
+        # direccion perpendicular ayuda a unir etiqueta y liquido.
+        vertical = max(5, min(25, int(self.h*0.035)//2*2+1))
+        primer_plano = cv2.morphologyEx(primer_plano, cv2.MORPH_CLOSE,
+                                        np.ones((vertical, 3), np.uint8))
         hsv = cv2.cvtColor(recorte, cv2.COLOR_BGR2HSV)
         mascaras = {}
-        for bebida, rangos in RANGOS.items():
+        for nombre, rangos in RANGOS.items():
             m = np.zeros(hsv.shape[:2], np.uint8)
             for inferior, superior in rangos:
                 m |= cv2.inRange(hsv, np.array(inferior), np.array(superior))
-            # Solo los pixeles que han cambiado respecto al fondo.
-            mascaras[bebida] = cv2.bitwise_and(m, movimiento)
-        self.mascara = movimiento
-        return movimiento, mascaras
+            mascaras[nombre] = cv2.bitwise_and(m, primer_plano)
+        self.mascara = primer_plano
+        return primer_plano, mascaras
 
     def clasificar_color(self, silueta, mascaras):
         """Clasifica por evidencias de liquido y etiqueta dentro de la silueta.
@@ -147,9 +168,9 @@ class DetectorObjetos:
             return None
         x, y, w, h = cv2.boundingRect(puntos)
         area = cv2.countNonZero(silueta)
-        if area < self.area_min or min(w, h) < 10:
+        if area < self.area_min or min(w, h) < 7:
             return None
-        if area > self.w*self.h*0.75 or max(w,h)/min(w,h) > 6:
+        if area > self.w*self.h*0.92 or max(w,h)/min(w,h) > 12:
             return None
         if area/(w*h) < 0.23:
             return None
@@ -209,6 +230,37 @@ class DetectorObjetos:
         self.aviso = 'Dos objetos unidos: seguimiento estimado'
         return partes
 
+    def agrupar_fragmentos(self, contornos):
+        """Une piezas alineadas de una misma botella (tapon y etiqueta).
+
+        En agua, el plastico transparente puede no diferenciarse de la mesa.
+        Las bebidas van una detras de otra en horizontal; solo se agrupan
+        fragmentos separados en vertical, no dos botellas lado a lado.
+        """
+        grupos = [c for c in contornos if cv2.contourArea(c) >= self.area_min*0.45]
+        cambio = True
+        while cambio:
+            cambio = False
+            for i, a in enumerate(grupos):
+                x,y,w,h = cv2.boundingRect(a)
+                for j in range(i+1, len(grupos)):
+                    b = grupos[j]
+                    xx,yy,ww,hh = cv2.boundingRect(b)
+                    solape = min(x+w,xx+ww)-max(x,xx)
+                    hueco = max(yy-(y+h),y-(yy+hh))
+                    if (solape >= 0.65*min(w,ww) and
+                        abs((x+w/2)-(xx+ww/2)) <= 0.35*max(w,ww) and
+                        0 <= hueco <= min(self.h*0.35, 2.2*max(w,ww)) and
+                        min(cv2.contourArea(a),cv2.contourArea(b)) <=
+                        0.65*max(cv2.contourArea(a),cv2.contourArea(b))):
+                        grupos[i] = cv2.convexHull(np.vstack((a,b)))
+                        grupos.pop(j)
+                        cambio = True
+                        break
+                if cambio:
+                    break
+        return grupos
+
     def detectar(self, frame):
         movimiento, mascaras = self.segmentar(frame)
         contornos, _ = cv2.findContours(movimiento, cv2.RETR_EXTERNAL,
@@ -216,10 +268,9 @@ class DetectorObjetos:
         detecciones = []
         self.ocupada = False
         self.aviso = ''
-        for c in contornos:
+        for c in self.agrupar_fragmentos(contornos):
             if cv2.contourArea(c) < self.area_min*0.7:
                 continue
-            self.ocupada = True
             silueta = np.zeros(movimiento.shape, np.uint8)
             cv2.drawContours(silueta, [c], -1, 255, -1)
             partes = self.separar_unidos(silueta, mascaras)
@@ -228,6 +279,10 @@ class DetectorObjetos:
                 continue
             d = self.candidato(silueta, mascaras)
             if d is not None:
+                # No seguir sombras ni manchas sin evidencia de bebida, salvo
+                # que correspondan a una trayectoria que ya conocemos.
+                if d['bebida'] is None and not any(self.coste(t, d) is not None for t in self.tracks):
+                    continue
                 # Si un solo contorno tapa dos tracks, no asignarlo a uno
                 # arbitrariamente: esperar a que vuelvan a separarse.
                 if len(self.tracks) == 2:
@@ -238,6 +293,7 @@ class DetectorObjetos:
                         self.aviso = 'Solapamiento ambiguo: esperando separacion'
                         continue
                 detecciones.append(d)
+        self.ocupada = bool(detecciones)
         return detecciones
 
     def clasificacion(self, t):
@@ -251,11 +307,11 @@ class DetectorObjetos:
         px,py = self.predecir(t)
         dx,dy = d['centro']
         distancia = float(np.hypot(dx-px,dy-py))
-        limite = max(30, self.w*0.12, t['tamano'][0]*0.8)
+        limite = max(30, self.w*0.18, t['tamano'][0]*0.8)
         limite *= 1+0.12*min(t['perdidos'],5)
-        if distancia > limite or abs(dy-py) > max(20,t['tamano'][1]*0.8):
+        if distancia > limite or abs(dy-py) > max(25,self.h*0.12,t['tamano'][1]*0.8):
             return None
-        if self.sentido*(dx-t['centro'][0]) < -max(12,t['tamano'][0]*0.4):
+        if self.sentido*(dx-t['centro'][0]) < -max(12,self.w*0.055,t['tamano'][0]*0.4):
             return None
         # El color solo penaliza asociaciones dudosas, no define la identidad.
         tipo = self.clasificacion(t)
@@ -338,12 +394,13 @@ class DetectorObjetos:
         # Un track perdido se conserva para recuperar su ID y estado de conteo.
         self.tracks = [t for t in self.tracks if t['perdidos'] <= MAX_PERDIDOS]
         libres = [d for j,d in enumerate(detecciones) if j not in usados_d]
-        libres.sort(key=lambda d:(d['bebida'] is None,self.posicion(d['centro'][0])))
+        libres.sort(key=lambda d:(d['bebida'] is None,self.posicion(d['centro'][0]) > -self.margen,-d['area']))
         for d in libres:
             if len(self.tracks) >= MAX_OBJETOS:
                 break
-            # No crear IDs sobre una division estimada ni despues de la linea.
-            if d['estimado'] or self.posicion(d['centro'][0]) > -self.margen:
+            # No crear IDs sobre una division estimada o una mancha desconocida.
+            # Un objeto nacido tras la linea se muestra, pero no se cuenta.
+            if d['estimado'] or d['bebida'] is None:
                 continue
             self.nuevo_track(d)
         eventos = []
@@ -361,7 +418,6 @@ class DetectorObjetos:
         return not self.ocupada and not self.tracks
 
     def dibujar(self, frame):
-        cv2.rectangle(frame,(self.x,self.y),(self.x+self.w-1,self.y+self.h-1),(255,255,255),2)
         xlinea = self.x+self.linea
         cv2.line(frame,(xlinea,self.y),(xlinea,self.y+self.h-1),(0,255,255),2)
         inicio = (self.x+int(self.w*(0.35 if self.sentido==1 else 0.65)),self.y+12)
@@ -390,38 +446,13 @@ class DetectorObjetos:
         return frame
 
 
-def preparar_detector(cap,mapas,anterior=None):
-    print('Retira las bebidas y deja la camara fija. Pulsa ESPACIO con la zona vacia.')
-    ventana = 'Preparar zona vacia'
-    anterior_t = time.perf_counter()
-    while True:
-        frame = leer_frame(cap,mapas)
-        vista = frame.copy()
-        cv2.putText(vista,'ESPACIO: capturar fondo | Q: cancelar',(10,50),0,0.55,(0,255,255),2)
-        ahora = time.perf_counter()
-        dibujar_fps(vista, 1/max(ahora-anterior_t, 1e-6))
-        anterior_t = ahora
-        cv2.imshow(ventana,vista)
-        tecla = cv2.waitKey(1)&255
-        if tecla in (27,ord('q')):
-            cv2.destroyWindow(ventana)
-            return None
-        if tecla==32:
-            break
-    # Mediana temporal: reduce ruido y fluctuaciones puntuales del sensor.
-    muestras = []
-    for i in range(15):
-        muestras.append(leer_frame(cap,mapas))
-        cv2.waitKey(1)
-    fondo = np.median(np.stack(muestras),axis=0).astype(np.uint8)
-    cv2.destroyWindow(ventana)
-    print('Selecciona toda la zona por donde ruedan las bebidas, de entrada a salida. ENTER para aceptar.')
-    zona = tuple(map(int,cv2.selectROI('Zona de paso',fondo,False,False)))
-    cv2.destroyWindow('Zona de paso')
-    if zona[2]<60 or zona[3]<30:
-        print('Zona cancelada o demasiado pequena.')
-        return None
-    detector = DetectorObjetos(fondo,zona,IZQUIERDA_DERECHA)
+def preparar_detector(cap, mapas, anterior=None):
+    """Arranque directo, sin capturar el fondo ni pedir una ROI."""
+    frame = leer_frame(cap, mapas)
+    print('Detector listo: toda la imagen. Pasa las bebidas de izquierda a derecha.'
+          if IZQUIERDA_DERECHA else
+          'Detector listo: toda la imagen. Pasa las bebidas de derecha a izquierda.')
+    detector = DetectorObjetos(frame, IZQUIERDA_DERECHA)
     if anterior is not None:
         detector.siguiente_id = anterior.siguiente_id
     return detector

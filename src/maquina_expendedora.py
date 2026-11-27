@@ -5,7 +5,6 @@ import time
 import cv2
 
 from gestion_camara import leer_frame
-from deteccion_objetos import preparar_detector
 from gestion_pedidos import GestorPedidos, leer_pedido, preguntar_nuevo_pedido
 from interfaz import mostrar
 
@@ -84,23 +83,11 @@ def ejecutar_maquina(cap,mapas,detector):
         tiempo = ahora
         mostrar(frame,detector,gestor,estado,fps)
         if ver_mascara:
-            cv2.imshow('Mascara de movimiento',detector.mascara)
+            cv2.imshow('Mascara de deteccion',detector.mascara)
         tecla = cv2.waitKey(1)&255
         if tecla in (27,ord('q')):
             return
         if tecla==ord('m'):
             ver_mascara = not ver_mascara
             if not ver_mascara:
-                cv2.destroyWindow('Mascara de movimiento')
-        if tecla==ord('r'):
-            if estado != 'en_curso' or not detector.zona_vacia():
-                print('Solo se puede recapturar durante un pedido, con la zona vacia.')
-            else:
-                cv2.destroyAllWindows()
-                nuevo = preparar_detector(cap,mapas,detector)
-                if nuevo is not None:
-                    detector = nuevo
-                    vacios = 0
-                ver_mascara = False
-                tiempo = time.perf_counter()
-                fps = 0.0
+                cv2.destroyWindow('Mascara de deteccion')

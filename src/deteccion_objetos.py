@@ -7,18 +7,30 @@ import itertools
 import cv2
 import numpy as np
 
-BEBIDAS = ('Coca-Cola', 'Nestea', 'Fanta', 'Agua')
-# H: 0..179; S y V: 0..255 en OpenCV. El rojo rodea el extremo de H.
+# El orden coincide con los cuatro digitos que introduce el usuario.
+BEBIDAS = ('Coca-Cola', 'Powerade', 'Fanta', 'Agua')
+# H: 0..179; S y V: 0..255 en OpenCV.
+# Evidencias del liquido y de la etiqueta, no un color unico por bebida.
+# El negro no tiene una tonalidad H fiable: se detecta por luminosidad V.
 RANGOS = {
-    'Coca-Cola': [((0, 85, 50), (9, 255, 255)), ((170, 85, 50), (179, 255, 255))],
-    'Nestea': [((35, 65, 45), (85, 255, 255))],
-    'Fanta': [((10, 90, 65), (25, 255, 255))],
-    'Agua': [((90, 65, 50), (135, 255, 255))],
+    'rojo': [((0, 110, 65), (8, 255, 255)),
+             ((170, 110, 65), (179, 255, 255))],
+    'cian': [((90, 150, 85), (107, 255, 255))],
+    'amarillo': [((17, 160, 100), (35, 255, 255))],
+    'naranja': [((9, 170, 100), (16, 255, 255))],
+    'azul_oscuro': [((108, 40, 40), (145, 255, 255))],
+    'oscuro': [((0, 0, 0), (179, 255, 95))],
 }
-COLORES = {'Coca-Cola': (0, 0, 255), 'Nestea': (0, 210, 0),
-           'Fanta': (0, 145, 255), 'Agua': (255, 150, 0)}
+COLORES = {'Coca-Cola': (0, 0, 255), 'Powerade': (255, 210, 0),
+           'Fanta': (0, 145, 255), 'Agua': (255, 120, 100)}
+# Fracciones minimas de la silueta. Ajustables con la camara real.
+MIN_CIAN = 0.14
+MIN_AMARILLO = 0.14
+MIN_NARANJA = 0.19
+MIN_ROJO = 0.045
+MIN_OSCURO = 0.20
+MIN_AZUL_AGUA = 0.055
 UMBRAL_FONDO = 25
-FRACCION_COLOR = 0.07
 MIN_VOTOS = 3
 MAX_PERDIDOS = 12
 MAX_OBJETOS = 2
@@ -73,6 +85,56 @@ class DetectorObjetos:
         self.mascara = movimiento
         return movimiento, mascaras
 
+    def clasificar_color(self, silueta, mascaras):
+        """Clasifica por evidencias de liquido y etiqueta dentro de la silueta.
+
+        Los pixeles blancos de las letras no son un requisito ni un fallo.
+        Powerade: cian saturado del liquido (no la etiqueta negra).
+        Fanta: amarillo/naranja del liquido, con apoyo de su etiqueta.
+        Coca-Cola: oscuridad del liquido y rojo de la etiqueta.
+        Agua: azul de etiqueta/tapon y ausencia de evidencia de otros liquidos.
+        No se identifica como agua cualquier objeto de color desconocido.
+        """
+        area = cv2.countNonZero(silueta)
+        if area == 0:
+            return None, 0.0
+        f = {nombre: cv2.countNonZero(m & silueta)/area
+             for nombre, m in mascaras.items()}
+        rojo = f['rojo']
+        cian = f['cian']
+        amarillo = f['amarillo']
+        naranja = f['naranja']
+        azul = f['azul_oscuro']
+        oscuro = f['oscuro']
+        # Cada bebida tiene su propia evidencia. La etiqueta blanca o negra
+        # del Powerade no compite como si fuera el color de otra bebida.
+        puntuaciones = {}
+        if cian >= MIN_CIAN:
+            puntuaciones['Powerade'] = cian
+        if amarillo >= MIN_AMARILLO or naranja >= MIN_NARANJA:
+            puntuaciones['Fanta'] = amarillo + 0.65*naranja
+        if rojo >= MIN_ROJO and oscuro >= MIN_OSCURO:
+            puntuaciones['Coca-Cola'] = min(1., 2*rojo + 0.4*oscuro)
+        elif rojo >= 0.20 and amarillo+naranja < 0.10 and cian < 0.08:
+            # Apoyo de la etiqueta si el liquido aparece demasiado iluminado.
+            puntuaciones['Coca-Cola'] = rojo
+
+        if puntuaciones:
+            orden = sorted(puntuaciones, key=puntuaciones.get, reverse=True)
+            mejor = orden[0]
+            # Si dos tipos tienen evidencias comparables, esperar mas frames.
+            if len(orden) > 1 and puntuaciones[mejor] < 1.35*puntuaciones[orden[1]]:
+                return None, 0.0
+            confianza = puntuaciones[mejor]/sum(puntuaciones.values())
+            return mejor, confianza
+
+        # La transparencia no es un color HSV. Se exige azul de la etiqueta
+        # y poca evidencia de liquido coloreado; nunca basta la ausencia de color.
+        if (azul >= MIN_AZUL_AGUA and cian < 0.08 and
+                amarillo+naranja < 0.10 and rojo < 0.045 and oscuro < 0.25):
+            return 'Agua', min(1., azul/MIN_AZUL_AGUA/2)
+        return None, 0.0
+
     def candidato(self, silueta, mascaras, estimado=False):
         puntos = cv2.findNonZero(silueta)
         if puntos is None:
@@ -85,18 +147,13 @@ class DetectorObjetos:
             return None
         if area/(w*h) < 0.23:
             return None
-        votos = {b: cv2.countNonZero(m & silueta) for b,m in mascaras.items()}
-        orden = sorted(BEBIDAS, key=votos.get, reverse=True)
-        primero, segundo = orden[:2]
-        # Se admite que la mayoria de la silueta no tenga color de marca.
-        # Si dos colores compiten sin un ganador claro, no votar ese frame.
-        bebida = None
-        confianza = 0.0
-        if votos[primero] >= max(30, FRACCION_COLOR*area):
-            confianza = votos[primero]/max(1, sum(votos.values()))
-            if votos[primero] >= 1.25*max(1, votos[segundo]):
-                bebida = primero
-        return {'caja': (x,y,w,h), 'centro': (x+w/2,y+h/2),
+        bebida, confianza = self.clasificar_color(silueta, mascaras)
+        # Centroide geometrico de la silueta: momentos espaciales de orden 1.
+        # No es simplemente el centro de su rectangulo delimitador.
+        momentos = cv2.moments(silueta, binaryImage=True)
+        centro = (momentos['m10']/momentos['m00'],
+                  momentos['m01']/momentos['m00'])
+        return {'caja': (x,y,w,h), 'centro': centro,
                 'area': area, 'bebida': bebida, 'confianza': confianza,
                 'estimado': estimado}
 
@@ -318,4 +375,10 @@ class DetectorObjetos:
             if t['estimado']:
                 texto += ' ~'
             cv2.putText(frame,texto,(x,max(18,y-7)),0,0.5,color,2)
+            # Las coordenadas del seguimiento son relativas a la ROI.
+            # Dibujar un punto rojo visible para cada objeto, sea del color que sea.
+            cx = self.x + int(round(t['centro'][0]))
+            cy = self.y + int(round(t['centro'][1]))
+            cv2.circle(frame,(cx,cy),7,(255,255,255),-1,cv2.LINE_AA)
+            cv2.circle(frame,(cx,cy),5,(0,0,255),-1,cv2.LINE_AA)
         return frame

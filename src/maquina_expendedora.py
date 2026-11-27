@@ -87,6 +87,8 @@ def ejecutar_maquina(cap,mapas,detector):
         tecla = cv2.waitKey(1)&255
         if tecla in (27,ord('q')):
             return
+        if tecla == ord('l'):
+            detector.cambiar_linea()
         if tecla==ord('m'):
             ver_mascara = not ver_mascara
             if not ver_mascara:

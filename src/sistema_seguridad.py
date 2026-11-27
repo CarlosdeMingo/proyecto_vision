@@ -237,7 +237,7 @@ def ejecucion_seguridad():
         print("No se puede abrir la camara")
     else:
         if sistema_seguridad(cap):
-            print("ACCESO CONCEDIDO -> lanzar tracker")
+            print("ACCESO CONCEDIDO -> lanzar tracker")        
         cap.release()
         cv2.destroyAllWindows()
 
